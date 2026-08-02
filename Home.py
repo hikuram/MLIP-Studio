@@ -74,6 +74,16 @@ from model_config import (
     MATTERSIM_MODELS, UPET_MODELS, UPET_MODELS_VERSIONS,
     SEVEN_NET_MODELS, SAMPLE_STRUCTURES, FAIRCHEM_CITATIONS, UPET_CITATIONS, ORB_CITATIONS, MATTERSIM_CITATIONS, SEVEN_NET_CITATIONS
 )
+from model_consensus import (
+    MODEL_CONSENSUS_TASK,
+    SOURCE_FRAME_COUNT_KEY,
+    ConsensusCalculationError,
+    ConsensusError,
+    render_consensus_results,
+    render_consensus_sidebar,
+    run_model_consensus,
+    validate_consensus_selection,
+)
 from data import atoms_to_graph
 from model import MPNN
 from torch_geometric.data import DataLoader
@@ -1442,7 +1452,9 @@ if input_method == "Upload File":
                     tmp_file.write(uploaded_file.getvalue())
                     tmp_filepath = tmp_file.name
                     
-                atoms_to_store = read(tmp_filepath)
+                source_frames = read(tmp_filepath, index=":")
+                atoms_to_store = source_frames[-1]
+                atoms_to_store.info[SOURCE_FRAME_COUNT_KEY] = len(source_frames)
                 st.session_state.atoms = atoms_to_store
                 st.session_state.uploaded_file_hash = uploaded_file.name # Track the loaded file
                 st.sidebar.success(f"Successfully loaded structure with {len(atoms_to_store)} atoms!")
@@ -1468,7 +1480,9 @@ elif input_method == "Select Example":
     if example_name and (st.session_state.atoms is None or st.session_state.atoms.info.get('source_name') != example_name):
         file_path = os.path.join(SAMPLE_DIR, SAMPLE_STRUCTURES[example_name])
         try:
-            atoms_to_store = read(file_path)
+            source_frames = read(file_path, index=":")
+            atoms_to_store = source_frames[-1]
+            atoms_to_store.info[SOURCE_FRAME_COUNT_KEY] = len(source_frames)
             atoms_to_store.info['source_name'] = example_name # Add a tag for tracking
             st.session_state.atoms = atoms_to_store
             st.sidebar.success(f"Loaded {example_name} with {len(atoms_to_store)} atoms!")
@@ -1495,7 +1509,9 @@ elif input_method == "Paste Content":
                     tmp_file.write(content.encode())
                     tmp_filepath = tmp_file.name
                     
-                atoms_to_store = read(tmp_filepath)
+                source_frames = read(tmp_filepath, index=":")
+                atoms_to_store = source_frames[-1]
+                atoms_to_store.info[SOURCE_FRAME_COUNT_KEY] = len(source_frames)
                 st.session_state.atoms = atoms_to_store
                 st.session_state.last_parsed_content = content # Track the parsed content
                 st.sidebar.success(f"Successfully parsed structure with {len(atoms_to_store)} atoms!")
@@ -1773,256 +1789,20 @@ elif input_method == "extXYZ Trajectory Upload":
 # ----------------------------------------------------
 atoms = st.session_state.atoms
 
-if atoms is not None:
-    if not hasattr(atoms, 'info'):
-        atoms.info = {}
-    atoms.info["charge"] = atoms.info.get("charge", 0) # Default charge
-    atoms.info["spin"] = atoms.info.get("spin", 1) # Default spin (usually 2S for ASE, model might want 2S+1)
-    
-    # Display confirmation in the main area (optional, helps the user confirm what's loaded)
-    # st.markdown(f"**Loaded Structure:** {atoms.get_chemical_formula()} ({len(atoms)} atoms)")
-
-st.sidebar.markdown("## Model Selection")
-if mattersim_available:
-    model_type = st.sidebar.radio("Select Model Type:", ["MACE", "FairChem", "ORB", "SEVEN_NET", "MatterSim", "UPET", "UFF", "D3 dispersion", "xTB", "In-House"])
-else:
-    model_type = st.sidebar.radio("Select Model Type:", ["MACE", "FairChem", "ORB", "SEVEN_NET", "UPET", "UFF", "D3 dispersion", "xTB", "In-House"])
-
-is_omol_model = False
-selected_task_type = None # For FairChem UMA
-
-if model_type == "MACE":
-    # Add option to choose between predefined models, upload, or URL
-    model_source = st.sidebar.radio(
-        "Model Source:",
-        ["Predefined Models", "Upload Model", "URL"]
-    )
-    
-    if model_source == "Predefined Models":
-        selected_model = st.sidebar.selectbox("Select MACE Model:", list(MACE_MODELS.keys()))
-        model_path = MACE_MODELS[selected_model]
-        
-        if selected_model in ["MACE OMAT Medium", " MACE OMAT Small", "MACE MATPES r2SCAN Medium", "MACE MATPES r2SCAN Medium", 
-                            "MACE OMOL-0 XL 4M", "MACE OFF 24 Medium", 
-                            "MACE OFF 23 Large", "MACE OFF 23 Medium", "MACE OFF 24 Small", "MACE POLAR 1 S", "MACE POLAR 1 M", "MACE POLAR 1 L"]:
-            st.sidebar.info("Using model under [Academic Software License (ASL)](https://github.com/gabor1/ASL/blob/main/ASL.md).")
-        # Display Citation
-        if selected_model in MACE_CITATIONS:
-            st.sidebar.info(MACE_CITATIONS[selected_model])
-        else:
-            st.sidebar.warning("Citation not available for this model.")
-    elif model_source == "Upload Model":
-        uploaded_file = st.sidebar.file_uploader(
-            "Upload .model file",
-            type=['model'],
-            help="Upload your custom MACE model file"
-        )
-
-        if uploaded_file is not None:
-            temp_dir = tempfile.gettempdir()
-
-            unique_name = f"{uuid.uuid4().hex}_{uploaded_file.name}"
-            model_path = os.path.join(temp_dir, unique_name)
-
-            with open(model_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-
-            st.sidebar.success(f"Loaded: {uploaded_file.name}")
-            selected_model = "Custom (Uploaded)"
-        else:
-            st.sidebar.info("Please upload a .model file")
-            model_path = None
-            selected_model = None
-    
-    else:  # URL
-        model_url = st.sidebar.text_input(
-            "Model URL:",
-            placeholder="https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
-            help="Provide a direct link to a .model file"
-        )
-        
-        if model_url:
-            if model_url.endswith('.model'):
-                model_path = model_url
-                selected_model = "Custom (URL)"
-                st.sidebar.success("URL provided")
-            else:
-                st.sidebar.error("URL must point to a .model file")
-                model_path = None
-                selected_model = None
-        else:
-            st.sidebar.info("Please enter a model URL")
-            model_path = None
-            selected_model = None
-    
-    # Only show these options if a model is selected/loaded
-    if model_path is not None:
-        selected_default_dtype = 'float32'
-        dispersion = st.sidebar.toggle("Dispersion correction?", value=False)
-        
-
-        if model_source == "Upload Model" or model_source == "URL":
-            is_omol_model = st.sidebar.checkbox("This is an OMOL-like model (requires charge/spin)", value=False)
-        if model_source == "Predefined Models":
-            if "OMOL" in selected_model.upper() or "POLAR" in selected_model.upper():
-                is_omol_model = True
-        
-        if is_omol_model:
-            charge = st.sidebar.number_input(
-                "Total Charge", 
-                min_value=-10, 
-                max_value=10, 
-                value=0
-            )
-            spin_multiplicity = st.sidebar.number_input(
-                "Spin Multiplicity (2S + 1)", 
-                min_value=1, 
-                max_value=20, 
-                step=1, 
-                value=1
-            )
-            atoms.info["total_charge"] = charge
-            atoms.info["total_spin"] = spin_multiplicity
-            atoms.info["charge"] = charge
-            atoms.info["spin"] = spin_multiplicity
-if model_type == "FairChem":
-    selected_model = st.sidebar.selectbox("Select FairChem Model:", list(FAIRCHEM_MODELS.keys()))
-    model_path = FAIRCHEM_MODELS[selected_model]
-    # Display Citation
-    if selected_model in FAIRCHEM_CITATIONS:
-        st.sidebar.info(FAIRCHEM_CITATIONS[selected_model])
-    else:
-        st.sidebar.warning("Citation not available for this model.")
-    if "UMA Small" in selected_model:
-        st.sidebar.info("Meta FAIR [Acceptable Use Policy](https://huggingface.co/facebook/UMA/blob/main/LICENSE) applies.")
-        selected_task_type = st.sidebar.selectbox("Select UMA Model Task Type:", ["omol", "omat", "omc", "odac", "oc20"])
-        if selected_task_type == "omol" and atoms is not None:
-            is_omol_model = True
-            if atoms is not None:
-                charge = st.sidebar.number_input("Total Charge", min_value=-10, max_value=10, value=0)
-                spin_multiplicity = st.sidebar.number_input("Spin Multiplicity (2S + 1)", min_value=1, max_value=20, step=1, value=1) # Assuming spin in atoms.info is S
-                atoms.info["charge"] = charge
-                atoms.info["spin"] = spin_multiplicity # FairChem expects multiplicity
-        else:
-            if atoms is not None:
-                atoms.info["charge"] = 0
-                atoms.info["spin"] = 1 # FairChem expects multiplicity
-if model_type == "ORB":
-    selected_model = st.sidebar.selectbox("Select ORB Model:", list(ORB_MODELS.keys()))
-    model_path = ORB_MODELS[selected_model]
-    # Display Citation
-    if selected_model in ORB_CITATIONS:
-        st.sidebar.info(ORB_CITATIONS[selected_model])
-    else:
-        st.sidebar.warning("Citation not available for this model.")
-    st.sidebar.info("ORB models are licensed under the [Apache License, Version 2.0.](https://github.com/orbital-materials/orb-models/blob/main/LICENSE)")
-    # selected_default_dtype = st.sidebar.selectbox("Select Precision (default_dtype):", ['float32-high', 'float32-highest', 'float64'])
-    selected_default_dtype = st.sidebar.selectbox("Select Precision (default_dtype):", ['float32-high', 'float32-highest'])
-    if "OMOL" in selected_model and atoms is not None:
-        is_omol_model = True
-        if atoms is not None:
-            charge = st.sidebar.number_input("Total Charge", min_value=-10, max_value=10, value=0)
-            spin_multiplicity = st.sidebar.number_input("Spin Multiplicity (2S + 1)", min_value=1, max_value=20, step=1, value=1) # Assuming spin in atoms.info is S
-            atoms.info["charge"] = charge
-            atoms.info["spin"] = spin_multiplicity # Orb expects multiplicity
-    else:
-        if atoms is not None:
-            atoms.info["charge"] = 0
-            atoms.info["spin"] = 1 # Orb expects multiplicity
-if model_type == "MatterSim":
-    selected_model = st.sidebar.selectbox("Select MatterSim Model:", list(MATTERSIM_MODELS.keys()))
-    model_path = MATTERSIM_MODELS[selected_model]
-    # Display Citation
-    if selected_model in MATTERSIM_CITATIONS:
-        st.sidebar.info(MATTERSIM_CITATIONS[selected_model])
-    else:
-        st.sidebar.warning("Citation not available for this model.")
-if model_type == "SEVEN_NET":
-    selected_model = st.sidebar.selectbox("Select SEVENNET Model:", list(SEVEN_NET_MODELS.keys()))
-    if selected_model == '7net-mf-ompa':
-        selected_modal_7net = st.sidebar.selectbox("Select Modal (multi fidelity model):", ['omat24', 'mpa'])
-    # if selected_model == '7net-omni-i8':
-    #     selected_modal_7net = st.sidebar.selectbox("Select Modal (multi fidelity model):", ['matpes_r2scan', 'mpa', 'omol25_low'])
-    # if selected_model == '7net-omni-i12':
-    #     selected_modal_7net = st.sidebar.selectbox("Select Modal (multi fidelity model):", ['matpes_r2scan', 'mpa', 'omol25_low'])
-    if selected_model == '7net-omni':
-        selected_modal_7net = st.sidebar.selectbox("Select Modal (multi fidelity model):", ['matpes_r2scan', 'mpa', 'omat24', 'matpes_pbe', 'oc20', 'oc22', 'odac23', 'omol25_low', 'omol25_high', 'spice', 'qcml', 'pet_mad', 'mp_r2scan'])
-    model_path = SEVEN_NET_MODELS[selected_model]
-    # Display Citation
-    if selected_model in SEVEN_NET_CITATIONS:
-        st.sidebar.info(SEVEN_NET_CITATIONS[selected_model])
-    else:
-        st.sidebar.warning("Citation not available for this model.")
-if model_type == "UPET":
-    selected_model = st.sidebar.selectbox("Select UPET Model:", list(UPET_MODELS.keys()))
-    model_path = UPET_MODELS[selected_model]
-    # Display Citation
-    if selected_model in UPET_CITATIONS:
-        st.sidebar.info(UPET_CITATIONS[selected_model])
-    else:
-        st.sidebar.warning("Citation not available for this model.")
-    non_conservative = st.sidebar.toggle("Direct (non-conservative forces)?", value=True)
-    uncertainty = st.sidebar.toggle("Uncertainty Prediction?", value=False)
-if model_type=="UFF":
-    selected_model = "N/A"
-    # st.sidebar.warning('The currently implemented UFF calculator is found to be somewhat unstable in internal tests. Its usage is only recommended for energy value evaluations and not for geometry optimizations.')
-if model_type=="xTB":
-    selected_model = "N/A"
-if model_type=="D3 dispersion":
-    selected_model = "N/A"
-    # Exchange-correlation functional
-    xc_dsip = st.sidebar.text_input("XC Functional", value="PBE")
-    st.sidebar.info('You can get the codes of supported XC functionals from this [link]([https://github.com/pfnet-research/torch-dftd/blob/master/torch_dftd/dftd3_xc_params.py).')
-
-    # D2 or D3 selection
-    method_disp = st.sidebar.radio(
-        "Dispersion Method",
-        ("DFTD2", "DFTD3"),
-        index=1  # default DFTD3
-    )
-    old_disp = (method_disp == "DFTD2")  # D2 → old=True
-
-    # Damping method
-    damping_disp = st.sidebar.selectbox(
-        "Damping Method",
-        ["zero", "bj", "zerom", "bjm"],
-        index=1
-    )
-if model_type == "In-House":
-    selected_model = st.sidebar.selectbox("Select In-House Model:", ['QM9-Gap'])
-    model_path = 'mlip-studio-qm9-gap.pt'
-if atoms is not None and selected_model is not None:
-
-    if atoms.pbc.any() and model_type=="UFF":
-        st.error("UFF Calculator does not support PBC!")
-        st.stop()
-    if atoms.pbc.any() and model_type=="xTB":
-        st.sidebar.warning("xTB Calculator sometimes fails for some dense periodic solids such as Silicon!")
-
-
-
-device = st.sidebar.radio("Computation Device:", ["CPU", "CUDA (GPU)"], index=0 if not torch.cuda.is_available() else 1)
-device = "cuda" if device == "CUDA (GPU)" and torch.cuda.is_available() else "cpu"
-
-if device == "cpu" and torch.cuda.is_available():
-    st.sidebar.info("GPU is available but CPU was selected.")
-elif device == "cpu" and not torch.cuda.is_available():
-    st.sidebar.info("No GPU detected. Using CPU.")
-
 st.sidebar.markdown("## Task Selection")
 if input_method=="Batch Upload" or input_method=="extXYZ Trajectory Upload":
-    task = st.sidebar.selectbox("Select Calculation Task:", 
-                           ["Batch Energy + Forces + Stress Calculation", 
-                            "Batch Atomization/Cohesive Energy", 
+    task = st.sidebar.selectbox("Select Calculation Task:",
+                           ["Batch Energy + Forces + Stress Calculation",
+                            "Batch Atomization/Cohesive Energy",
                             "Batch HOMO-LUMO Gap Prediction"
                             ])
 else:
-    task = st.sidebar.selectbox("Select Calculation Task:", 
-                            ["Energy Calculation", 
-                            "Energy + Forces + Stress Calculation", 
-                            "Hessian Calculation", 
-                            "Atomization/Cohesive Energy", 
-                            "Geometry Optimization", 
+    task = st.sidebar.selectbox("Select Calculation Task:",
+                            ["Energy Calculation",
+                            "Energy + Forces + Stress Calculation",
+                            "Hessian Calculation",
+                            "Atomization/Cohesive Energy",
+                            "Geometry Optimization",
                             "Cell + Geometry Optimization",
                             #"Global Optimization",
                             "Vibrational Mode Analysis",
@@ -2031,8 +1811,249 @@ else:
                             "Dipole Moment and Partial Charges",
                             "Equation of State",
                             "Spin Determination",
-                            "HOMO-LUMO Gap"
+                            "HOMO-LUMO Gap",
+                            MODEL_CONSENSUS_TASK
                             ])
+
+if atoms is not None:
+    if not hasattr(atoms, 'info'):
+        atoms.info = {}
+    atoms.info["charge"] = atoms.info.get("charge", 0) # Default charge
+    atoms.info["spin"] = atoms.info.get("spin", 1) # Default spin (usually 2S for ASE, model might want 2S+1)
+
+    # Display confirmation in the main area (optional, helps the user confirm what's loaded)
+    # st.markdown(f"**Loaded Structure:** {atoms.get_chemical_formula()} ({len(atoms)} atoms)")
+
+consensus_selection = None
+if task == MODEL_CONSENSUS_TASK:
+    consensus_selection = render_consensus_sidebar(atoms)
+else:
+    st.sidebar.markdown("## Model Selection")
+    if mattersim_available:
+        model_type = st.sidebar.radio("Select Model Type:", ["MACE", "FairChem", "ORB", "SEVEN_NET", "MatterSim", "UPET", "UFF", "D3 dispersion", "xTB", "In-House"])
+    else:
+        model_type = st.sidebar.radio("Select Model Type:", ["MACE", "FairChem", "ORB", "SEVEN_NET", "UPET", "UFF", "D3 dispersion", "xTB", "In-House"])
+
+    is_omol_model = False
+    selected_task_type = None # For FairChem UMA
+
+    if model_type == "MACE":
+        # Add option to choose between predefined models, upload, or URL
+        model_source = st.sidebar.radio(
+            "Model Source:",
+            ["Predefined Models", "Upload Model", "URL"]
+        )
+
+        if model_source == "Predefined Models":
+            selected_model = st.sidebar.selectbox("Select MACE Model:", list(MACE_MODELS.keys()))
+            model_path = MACE_MODELS[selected_model]
+
+            if selected_model in ["MACE OMAT Medium", " MACE OMAT Small", "MACE MATPES r2SCAN Medium", "MACE MATPES r2SCAN Medium",
+                                "MACE OMOL-0 XL 4M", "MACE OFF 24 Medium",
+                                "MACE OFF 23 Large", "MACE OFF 23 Medium", "MACE OFF 24 Small", "MACE POLAR 1 S", "MACE POLAR 1 M", "MACE POLAR 1 L"]:
+                st.sidebar.info("Using model under [Academic Software License (ASL)](https://github.com/gabor1/ASL/blob/main/ASL.md).")
+            # Display Citation
+            if selected_model in MACE_CITATIONS:
+                st.sidebar.info(MACE_CITATIONS[selected_model])
+            else:
+                st.sidebar.warning("Citation not available for this model.")
+        elif model_source == "Upload Model":
+            uploaded_file = st.sidebar.file_uploader(
+                "Upload .model file",
+                type=['model'],
+                help="Upload your custom MACE model file"
+            )
+
+            if uploaded_file is not None:
+                temp_dir = tempfile.gettempdir()
+
+                unique_name = f"{uuid.uuid4().hex}_{uploaded_file.name}"
+                model_path = os.path.join(temp_dir, unique_name)
+
+                with open(model_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+
+                st.sidebar.success(f"Loaded: {uploaded_file.name}")
+                selected_model = "Custom (Uploaded)"
+            else:
+                st.sidebar.info("Please upload a .model file")
+                model_path = None
+                selected_model = None
+
+        else:  # URL
+            model_url = st.sidebar.text_input(
+                "Model URL:",
+                placeholder="https://github.com/ACEsuit/mace-foundations/releases/download/mace_matpes_0/MACE-matpes-pbe-omat-ft.model",
+                help="Provide a direct link to a .model file"
+            )
+
+            if model_url:
+                if model_url.endswith('.model'):
+                    model_path = model_url
+                    selected_model = "Custom (URL)"
+                    st.sidebar.success("URL provided")
+                else:
+                    st.sidebar.error("URL must point to a .model file")
+                    model_path = None
+                    selected_model = None
+            else:
+                st.sidebar.info("Please enter a model URL")
+                model_path = None
+                selected_model = None
+
+        # Only show these options if a model is selected/loaded
+        if model_path is not None:
+            selected_default_dtype = 'float32'
+            dispersion = st.sidebar.toggle("Dispersion correction?", value=False)
+
+
+            if model_source == "Upload Model" or model_source == "URL":
+                is_omol_model = st.sidebar.checkbox("This is an OMOL-like model (requires charge/spin)", value=False)
+            if model_source == "Predefined Models":
+                if "OMOL" in selected_model.upper() or "POLAR" in selected_model.upper():
+                    is_omol_model = True
+
+            if is_omol_model:
+                charge = st.sidebar.number_input(
+                    "Total Charge",
+                    min_value=-10,
+                    max_value=10,
+                    value=0
+                )
+                spin_multiplicity = st.sidebar.number_input(
+                    "Spin Multiplicity (2S + 1)",
+                    min_value=1,
+                    max_value=20,
+                    step=1,
+                    value=1
+                )
+                atoms.info["total_charge"] = charge
+                atoms.info["total_spin"] = spin_multiplicity
+                atoms.info["charge"] = charge
+                atoms.info["spin"] = spin_multiplicity
+    if model_type == "FairChem":
+        selected_model = st.sidebar.selectbox("Select FairChem Model:", list(FAIRCHEM_MODELS.keys()))
+        model_path = FAIRCHEM_MODELS[selected_model]
+        # Display Citation
+        if selected_model in FAIRCHEM_CITATIONS:
+            st.sidebar.info(FAIRCHEM_CITATIONS[selected_model])
+        else:
+            st.sidebar.warning("Citation not available for this model.")
+        if "UMA Small" in selected_model:
+            st.sidebar.info("Meta FAIR [Acceptable Use Policy](https://huggingface.co/facebook/UMA/blob/main/LICENSE) applies.")
+            selected_task_type = st.sidebar.selectbox("Select UMA Model Task Type:", ["omol", "omat", "omc", "odac", "oc20"])
+            if selected_task_type == "omol" and atoms is not None:
+                is_omol_model = True
+                if atoms is not None:
+                    charge = st.sidebar.number_input("Total Charge", min_value=-10, max_value=10, value=0)
+                    spin_multiplicity = st.sidebar.number_input("Spin Multiplicity (2S + 1)", min_value=1, max_value=20, step=1, value=1) # Assuming spin in atoms.info is S
+                    atoms.info["charge"] = charge
+                    atoms.info["spin"] = spin_multiplicity # FairChem expects multiplicity
+            else:
+                if atoms is not None:
+                    atoms.info["charge"] = 0
+                    atoms.info["spin"] = 1 # FairChem expects multiplicity
+    if model_type == "ORB":
+        selected_model = st.sidebar.selectbox("Select ORB Model:", list(ORB_MODELS.keys()))
+        model_path = ORB_MODELS[selected_model]
+        # Display Citation
+        if selected_model in ORB_CITATIONS:
+            st.sidebar.info(ORB_CITATIONS[selected_model])
+        else:
+            st.sidebar.warning("Citation not available for this model.")
+        st.sidebar.info("ORB models are licensed under the [Apache License, Version 2.0.](https://github.com/orbital-materials/orb-models/blob/main/LICENSE)")
+        # selected_default_dtype = st.sidebar.selectbox("Select Precision (default_dtype):", ['float32-high', 'float32-highest', 'float64'])
+        selected_default_dtype = st.sidebar.selectbox("Select Precision (default_dtype):", ['float32-high', 'float32-highest'])
+        if "OMOL" in selected_model and atoms is not None:
+            is_omol_model = True
+            if atoms is not None:
+                charge = st.sidebar.number_input("Total Charge", min_value=-10, max_value=10, value=0)
+                spin_multiplicity = st.sidebar.number_input("Spin Multiplicity (2S + 1)", min_value=1, max_value=20, step=1, value=1) # Assuming spin in atoms.info is S
+                atoms.info["charge"] = charge
+                atoms.info["spin"] = spin_multiplicity # Orb expects multiplicity
+        else:
+            if atoms is not None:
+                atoms.info["charge"] = 0
+                atoms.info["spin"] = 1 # Orb expects multiplicity
+    if model_type == "MatterSim":
+        selected_model = st.sidebar.selectbox("Select MatterSim Model:", list(MATTERSIM_MODELS.keys()))
+        model_path = MATTERSIM_MODELS[selected_model]
+        # Display Citation
+        if selected_model in MATTERSIM_CITATIONS:
+            st.sidebar.info(MATTERSIM_CITATIONS[selected_model])
+        else:
+            st.sidebar.warning("Citation not available for this model.")
+    if model_type == "SEVEN_NET":
+        selected_model = st.sidebar.selectbox("Select SEVENNET Model:", list(SEVEN_NET_MODELS.keys()))
+        if selected_model == '7net-mf-ompa':
+            selected_modal_7net = st.sidebar.selectbox("Select Modal (multi fidelity model):", ['omat24', 'mpa'])
+        # if selected_model == '7net-omni-i8':
+        #     selected_modal_7net = st.sidebar.selectbox("Select Modal (multi fidelity model):", ['matpes_r2scan', 'mpa', 'omol25_low'])
+        # if selected_model == '7net-omni-i12':
+        #     selected_modal_7net = st.sidebar.selectbox("Select Modal (multi fidelity model):", ['matpes_r2scan', 'mpa', 'omol25_low'])
+        if selected_model == '7net-omni':
+            selected_modal_7net = st.sidebar.selectbox("Select Modal (multi fidelity model):", ['matpes_r2scan', 'mpa', 'omat24', 'matpes_pbe', 'oc20', 'oc22', 'odac23', 'omol25_low', 'omol25_high', 'spice', 'qcml', 'pet_mad', 'mp_r2scan'])
+        model_path = SEVEN_NET_MODELS[selected_model]
+        # Display Citation
+        if selected_model in SEVEN_NET_CITATIONS:
+            st.sidebar.info(SEVEN_NET_CITATIONS[selected_model])
+        else:
+            st.sidebar.warning("Citation not available for this model.")
+    if model_type == "UPET":
+        selected_model = st.sidebar.selectbox("Select UPET Model:", list(UPET_MODELS.keys()))
+        model_path = UPET_MODELS[selected_model]
+        # Display Citation
+        if selected_model in UPET_CITATIONS:
+            st.sidebar.info(UPET_CITATIONS[selected_model])
+        else:
+            st.sidebar.warning("Citation not available for this model.")
+        non_conservative = st.sidebar.toggle("Direct (non-conservative forces)?", value=True)
+        uncertainty = st.sidebar.toggle("Uncertainty Prediction?", value=False)
+    if model_type=="UFF":
+        selected_model = "N/A"
+        # st.sidebar.warning('The currently implemented UFF calculator is found to be somewhat unstable in internal tests. Its usage is only recommended for energy value evaluations and not for geometry optimizations.')
+    if model_type=="xTB":
+        selected_model = "N/A"
+    if model_type=="D3 dispersion":
+        selected_model = "N/A"
+        # Exchange-correlation functional
+        xc_dsip = st.sidebar.text_input("XC Functional", value="PBE")
+        st.sidebar.info('You can get the codes of supported XC functionals from this [link]([https://github.com/pfnet-research/torch-dftd/blob/master/torch_dftd/dftd3_xc_params.py).')
+
+        # D2 or D3 selection
+        method_disp = st.sidebar.radio(
+            "Dispersion Method",
+            ("DFTD2", "DFTD3"),
+            index=1  # default DFTD3
+        )
+        old_disp = (method_disp == "DFTD2")  # D2 → old=True
+
+        # Damping method
+        damping_disp = st.sidebar.selectbox(
+            "Damping Method",
+            ["zero", "bj", "zerom", "bjm"],
+            index=1
+        )
+    if model_type == "In-House":
+        selected_model = st.sidebar.selectbox("Select In-House Model:", ['QM9-Gap'])
+        model_path = 'mlip-studio-qm9-gap.pt'
+    if atoms is not None and selected_model is not None:
+
+        if atoms.pbc.any() and model_type=="UFF":
+            st.error("UFF Calculator does not support PBC!")
+            st.stop()
+        if atoms.pbc.any() and model_type=="xTB":
+            st.sidebar.warning("xTB Calculator sometimes fails for some dense periodic solids such as Silicon!")
+
+
+
+    device = st.sidebar.radio("Computation Device:", ["CPU", "CUDA (GPU)"], index=0 if not torch.cuda.is_available() else 1)
+    device = "cuda" if device == "CUDA (GPU)" and torch.cuda.is_available() else "cpu"
+
+    if device == "cpu" and torch.cuda.is_available():
+        st.sidebar.info("GPU is available but CPU was selected.")
+    elif device == "cpu" and not torch.cuda.is_available():
+        st.sidebar.info("No GPU detected. Using CPU.")
 
 if "Optimization" in task:
     # st.sidebar.markdown("### Optimization Parameters")
@@ -2259,29 +2280,144 @@ if atoms is not None:
         }
         for key, value in atoms_info.items():
             st.write(f"**{key}:** {value}")
-    
+
     with col2:
         st.markdown('## Calculation Setup', unsafe_allow_html=True)
-        st.markdown("### Selected Model")
-        st.write(f"**Model Type:** {model_type}")
-        st.write(f"**Model:** {selected_model}")
-        if model_type == "FairChem" and "UMA Small" in selected_model:
-            st.write(f"**UMA Task Type:** {selected_task_type}")
-        if model_type == "MACE":
-            st.write(f"**Dispersion:** {dispersion}")
-        st.write(f"**Device:** {device}")
-        
-        st.markdown("### Selected Task")
-        st.write(f"**Task:** {task}")
-        
-        if "Geometry Optimization" in task:
-            st.write(f"**Max Steps:** {max_steps}")
-            st.write(f"**Convergence Threshold:** {fmax} eV/Å")
-            st.write(f"**Optimizer:** {optimizer_type}")
-        
-        run_calculation = st.button("Run Calculation", type="primary")
-        
-        if run_calculation:            
+        if task == MODEL_CONSENSUS_TASK:
+            selected_consensus_labels = [
+                spec.label for spec in consensus_selection.model_specs
+            ]
+            st.markdown("### Selected Committee")
+            st.write(f"**Task:** {task}")
+            st.write(f"**Dataset:** {consensus_selection.dataset}")
+            st.write(f"**Selected Model Count:** {len(selected_consensus_labels)}")
+            st.write(
+                f"**Selected Models:** "
+                f"{', '.join(selected_consensus_labels) if selected_consensus_labels else 'None'}"
+            )
+            st.write(f"**Device:** {consensus_selection.device}")
+            if consensus_selection.dataset == "OMol25":
+                st.write(f"**Total Charge:** {consensus_selection.charge}")
+                st.write(
+                    f"**Spin Multiplicity (2S + 1):** {consensus_selection.spin}"
+                )
+            if consensus_selection.run_perturbation_scan:
+                st.write("**Perturbed PES Scan:** Enabled")
+                st.write(
+                    f"**Perturbed Configurations:** "
+                    f"{consensus_selection.perturbation_count}"
+                )
+                st.write(
+                    f"**Maximum RMS Displacement:** "
+                    f"{consensus_selection.perturbation_amplitude:.3f} Å"
+                )
+                st.write(
+                    f"**Perturbation Seed:** "
+                    f"{consensus_selection.perturbation_seed}"
+                )
+        else:
+            st.markdown("### Selected Model")
+            st.write(f"**Model Type:** {model_type}")
+            st.write(f"**Model:** {selected_model}")
+            if model_type == "FairChem" and "UMA Small" in selected_model:
+                st.write(f"**UMA Task Type:** {selected_task_type}")
+            if model_type == "MACE":
+                st.write(f"**Dispersion:** {dispersion}")
+            st.write(f"**Device:** {device}")
+
+            st.markdown("### Selected Task")
+            st.write(f"**Task:** {task}")
+
+        if task == MODEL_CONSENSUS_TASK:
+            run_calculation = st.button(
+                "Run Calculation",
+                type="primary",
+                disabled=not consensus_selection.is_valid,
+            )
+        else:
+            if "Geometry Optimization" in task:
+                st.write(f"**Max Steps:** {max_steps}")
+                st.write(f"**Convergence Threshold:** {fmax} eV/Å")
+                st.write(f"**Optimizer:** {optimizer_type}")
+
+            run_calculation = st.button("Run Calculation", type="primary")
+
+        if task == MODEL_CONSENSUS_TASK:
+            stored_fingerprint = st.session_state.get(
+                "model_consensus_fingerprint"
+            )
+            if stored_fingerprint != consensus_selection.fingerprint:
+                st.session_state.pop("model_consensus_result", None)
+                st.session_state.pop("model_consensus_fingerprint", None)
+
+        if run_calculation and task == MODEL_CONSENSUS_TASK:
+            st.session_state.pop("model_consensus_result", None)
+            try:
+                validate_consensus_selection(
+                    atoms,
+                    consensus_selection.model_specs,
+                    consensus_selection.dataset,
+                )
+                with st.spinner(
+                    "Running selected models sequentially... Please wait."
+                ):
+                    consensus_result = run_model_consensus(
+                        atoms,
+                        consensus_selection.model_specs,
+                        consensus_selection.device,
+                        charge=consensus_selection.charge,
+                        spin=consensus_selection.spin,
+                        perturbation_count=(
+                            consensus_selection.perturbation_count
+                            if consensus_selection.run_perturbation_scan
+                            else None
+                        ),
+                        perturbation_amplitude=(
+                            consensus_selection.perturbation_amplitude
+                        ),
+                        perturbation_seed=consensus_selection.perturbation_seed,
+                    )
+                st.session_state.model_consensus_result = consensus_result
+                st.session_state.model_consensus_fingerprint = (
+                    consensus_selection.fingerprint
+                )
+            except ConsensusCalculationError as exc:
+                st.error(str(exc))
+                if exc.model_table is not None:
+                    st.markdown("### Model Status")
+                    st.dataframe(
+                        exc.model_table,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+            except ConsensusError as exc:
+                st.error(str(exc))
+
+        if task == MODEL_CONSENSUS_TASK:
+            stored_consensus_result = st.session_state.get(
+                "model_consensus_result"
+            )
+            if (
+                stored_consensus_result is not None
+                and st.session_state.get("model_consensus_fingerprint")
+                == consensus_selection.fingerprint
+            ):
+                render_consensus_results(
+                    stored_consensus_result,
+                    atoms,
+                    force_tolerance=(
+                        consensus_selection.force_tolerance
+                        if consensus_selection.use_tolerances
+                        else None
+                    ),
+                    energy_tolerance=(
+                        consensus_selection.energy_tolerance
+                        if consensus_selection.use_tolerances
+                        else None
+                    ),
+                )
+
+        if run_calculation and task != MODEL_CONSENSUS_TASK:
             results = {}
             #global table_placeholder # Ensure they are accessible
             opt_log = [] # Reset log for each run
