@@ -119,6 +119,202 @@ opt.run(fmax=0.01, steps=400)
 
 The Lindh implementation is in `optimizers/lindh.py`; analytical MACE Hessian and seed implementations are in `optimizers/analytical_hessian.py`; shared line-search-free step logic is in `optimizers/fixed_step.py`; and public imports are defined in `optimizers/__init__.py`. The downloadable package exposes only the three released optimizer classes.
 
+## Programmatic API (Initial)
+
+The repository now includes an initial UI-independent `mlipstudio` package. It
+can discover the 62 universal models without importing their heavyweight
+runtimes, construct calculators lazily, and run the task APIs described below
+on an `ase.Atoms` object.
+
+Run the complete installation and API showcase in Google Colab:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mlipstudio/MLIP-Studio/blob/main/examples/MLIP_Studio_API_Colab.ipynb)
+
+The notebook demonstrates model discovery, single-point energy/forces/stress,
+geometry optimization, cohesive and atomization energy, HOMO-LUMO gap,
+dipole/partial charges, spin determination, and band gap/DOS.
+
+Simple standalone scripts for every public task are available in
+[`examples/`](examples/README.md).
+
+```python
+from ase.build import molecule
+import mlipstudio
+
+atoms = molecule("H2O")
+calculator = mlipstudio.create_calculator(
+    "MACE MPA Medium",
+    device="cpu",
+)
+
+task = mlipstudio.SinglePointTask(properties=("energy", "forces"))
+result = task.calculate(atoms, calculator)
+
+print(result.energy)      # eV
+print(result.max_force)   # eV/Angstrom
+```
+
+Tasks copy their input by default and results contain raw numerical values in
+ASE units. UMA models require an explicit `task_name` parameter, and multimodal
+SevenNet models require an explicit `modal` parameter. The detailed extraction,
+packaging, MD, and NEB plan is in `mlipstudio/API_DESIGN.md`.
+
+### Band Gap and Density of States
+
+`PET-MAD-DOS` is a task-specific provider rather than a general energy/force
+calculator. It currently runs on CPU:
+
+```python
+from ase.io import read
+import mlipstudio
+
+atoms = read("Si.cif")
+calculator = mlipstudio.create_calculator("PET-MAD-DOS", device="cpu")
+result = mlipstudio.BandGapDOSTask().calculate(atoms, calculator)
+
+print(result.band_gap_eV)
+print(result.fermi_level_eV)
+print(result.energies_relative_to_fermi_eV)
+print(result.density_of_states)
+```
+
+The result contains both the original DOS energy grid and the grid shifted so
+that the Fermi level is zero.
+
+### HOMO-LUMO Gap
+
+The bundled `QM9-Gap` model supports non-periodic molecules containing only H,
+C, N, O, and F:
+
+```python
+from ase.build import molecule
+import mlipstudio
+
+atoms = molecule("CH4")
+calculator = mlipstudio.create_calculator("QM9-Gap", device="cpu")
+result = mlipstudio.HOMOLUMOGapTask().calculate(atoms, calculator)
+
+print(result.gap_eV)
+```
+
+An alternative checkpoint can be supplied with
+`create_calculator("QM9-Gap", model_path="model.pt")`.
+
+### Spin Determination
+
+Spin determination requires a model mode trained to consume molecular charge
+and spin metadata. For UMA, select the `omol` task explicitly:
+
+```python
+from ase.build import molecule
+import mlipstudio
+
+atoms = molecule("H2O")
+calculator = mlipstudio.create_calculator(
+    "UMA Small 1.2",
+    device="cuda",
+    task_name="omol",
+)
+
+task = mlipstudio.SpinDeterminationTask(
+    charge=0,
+    multiplicities=(1, 3, 5),
+)
+result = task.calculate(atoms, calculator)
+
+print(result.optimal_state.multiplicity)
+print(result.optimal_state.energy_eV)
+for state in result.states:
+    print(state.multiplicity, state.energy_eV, state.error)
+```
+
+If `multiplicities` is omitted, the task generates electron-parity-compatible
+values up to `maximum_multiplicity=5`. Calculator caches are cleared between
+states because ASE does not treat changes in `atoms.info` as geometric system
+changes.
+
+### Atomization and Cohesive Energy
+
+The same task returns total atomization energy for a non-periodic molecule and
+per-atom cohesive energy for a periodic structure. For MACE and other general
+calculators, isolated atoms are evaluated once per unique element:
+
+```python
+from ase.build import molecule
+import mlipstudio
+
+atoms = molecule("H2O")
+calculator = mlipstudio.create_calculator(
+    "MACE MPA Medium",
+    device="cuda",
+)
+
+result = mlipstudio.AtomizationCohesiveEnergyTask().calculate(
+    atoms,
+    calculator,
+)
+
+print(result.calculation_type)          # "atomization"
+print(result.atomization_energy_eV)     # eV per molecule
+print(result.system_energy_eV)
+print(result.isolated_atoms_energy_eV)
+print(result.reference_source)
+```
+
+For periodic structures, `result.cohesive_energy_eV_per_atom` is populated.
+FairChem calculators automatically use the bundled table matching their
+`task_name`, such as `omat_elem_refs` or `omol_elem_refs`:
+
+```python
+from ase.build import bulk
+
+atoms = bulk("Cu")
+calculator = mlipstudio.create_calculator(
+    "UMA Small 1.2",
+    device="cuda",
+    task_name="omat",
+)
+result = mlipstudio.AtomizationCohesiveEnergyTask().calculate(atoms, calculator)
+```
+
+Explicit reference energies may be supplied by symbol or atomic number. This
+is recommended when a model requires a particular isolated-atom spin state:
+
+```python
+task = mlipstudio.AtomizationCohesiveEnergyTask(
+    isolated_atom_energies={"H": -1.23, "O": -4.56},
+)
+```
+
+Missing element references raise an error rather than being treated as zero.
+Every result records the table or calculation strategy used.
+
+### Dipole Moment and Partial Charges
+
+Dipole and charge prediction is registered for MACE-POLAR models:
+
+```python
+from ase.build import molecule
+import mlipstudio
+
+atoms = molecule("H2O")
+calculator = mlipstudio.create_calculator(
+    "MACE POLAR 1 S",
+    device="cuda",
+)
+
+result = mlipstudio.DipoleMomentTask(
+    charge=0,
+    spin_multiplicity=1,
+    external_field=(0.0, 0.0, 0.0),
+).calculate(atoms, calculator)
+
+print(result.dipole_eA)                 # [mux, muy, muz] in e*Angstrom
+print(result.dipole_magnitude_eA)
+print(result.partial_charges_e)         # one value per atom
+print(result.total_partial_charge_e)
+```
+
 ## Supported Models
 
 MLIP Studio currently includes 62 predefined universal MLIP models from six major model families. Additional calculators and task-specific models are also available.
@@ -161,6 +357,36 @@ MLIP Studio currently includes 62 predefined universal MLIP models from six majo
 - A CUDA-capable GPU and compatible PyTorch installation are required for local GPU acceleration.
 - Materials Project import requires an `MP_API_KEY` environment variable.
 - UMA and ESEN models also require a hugging face login and approval of the account for downloading UMA and ESEN models.
+
+### API-Only Installation
+
+Install the required model libraries using the family-specific instructions
+below, then install the Python API from the repository root. Do not run this
+command from inside the `mlipstudio/` directory.
+
+For an editable development installation:
+
+```bash
+python -m pip install -e . --no-deps
+```
+
+For a regular local installation:
+
+```bash
+python -m pip install . --no-deps
+```
+
+Dependency resolution is intentionally disabled because several supported
+model families require custom installation ordering, source repositories, or
+`--no-deps`. The API installer packages `mlipstudio`, its current compatibility
+modules, and the bundled QM9 checkpoint; it does not install Streamlit or any
+model-family runtime.
+
+Verify the installation from a directory outside the repository:
+
+```bash
+python -c "import mlipstudio; print(mlipstudio.__version__)"
+```
 
 ### Local Setup
 
@@ -240,11 +466,14 @@ Note that MLIP Studio provides access to several third-party model families, cal
 | --- | --- |
 | `Home.py` | Main Streamlit application |
 | `model_config.py` | Supported model definitions, model URLs/identifiers, citations, and sample structure list |
+| `mlipstudio/` | UI-independent Python API, model factories, task objects, typed results, and API design plan |
 | `optimizers/` | Reusable Lindh and analytical-MACE Hessian LBFGS implementations |
 | `sample_structures/` | Example molecules, crystals, surfaces, and interfaces |
 | `requirements.txt` | Python dependencies |
+| `setup.py` | Minimal dependency-free packaging configuration for the Python API |
 | `Dockerfile` | Container build recipe |
-| `mlip-studio-qm9-gap.pt` | In-house QM9 HOMO-LUMO gap model checkpoint |
+| `mlipstudio/mlip-studio-qm9-gap.pt` | Packaged in-house QM9 HOMO-LUMO gap checkpoint |
+| `mlipstudio/reference_energies.yaml` | Packaged FairChem elemental reference-energy tables |
 
 ## Citation
 

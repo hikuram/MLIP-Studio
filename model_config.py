@@ -1,4 +1,3 @@
-from orb_models.forcefield import pretrained
 MACE_MODELS = {
     "MACE MPA Medium": "https://github.com/ACEsuit/mace-mp/releases/download/mace_mpa_0/mace-mpa-0-medium.model",
     "MACE OMAT Medium": "https://github.com/ACEsuit/mace-mp/releases/download/mace_omat_0/mace-omat-0-medium.model",
@@ -84,16 +83,16 @@ FAIRCHEM_CITATIONS = {
 }
 # Define the available ORB models
 ORB_MODELS = {
-    "V3 OMOL Conservative": pretrained.orb_v3_conservative_omol,
-    "V3 OMOL Direct": pretrained.orb_v3_direct_omol,
-    "V3 OMAT Conservative (inf)": pretrained.orb_v3_conservative_inf_omat,
-    "V3 OMAT Conservative (20)": pretrained.orb_v3_conservative_20_omat,
-    "V3 OMAT Direct (inf)": pretrained.orb_v3_direct_inf_omat,
-    "V3 OMAT Direct (20)": pretrained.orb_v3_direct_20_omat,
-    "V3 MPA Conservative (inf)": pretrained.orb_v3_conservative_inf_mpa,
-    "V3 MPA Conservative (20)": pretrained.orb_v3_conservative_20_mpa,
-    "V3 MPA Direct (inf)": pretrained.orb_v3_direct_inf_mpa,
-    "V3 MPA Direct (20)": pretrained.orb_v3_direct_20_mpa,
+    "V3 OMOL Conservative": "orb_v3_conservative_omol",
+    "V3 OMOL Direct": "orb_v3_direct_omol",
+    "V3 OMAT Conservative (inf)": "orb_v3_conservative_inf_omat",
+    "V3 OMAT Conservative (20)": "orb_v3_conservative_20_omat",
+    "V3 OMAT Direct (inf)": "orb_v3_direct_inf_omat",
+    "V3 OMAT Direct (20)": "orb_v3_direct_20_omat",
+    "V3 MPA Conservative (inf)": "orb_v3_conservative_inf_mpa",
+    "V3 MPA Conservative (20)": "orb_v3_conservative_20_mpa",
+    "V3 MPA Direct (inf)": "orb_v3_direct_inf_mpa",
+    "V3 MPA Direct (20)": "orb_v3_direct_20_mpa",
 }
 ORB_CITATIONS = {
     "V3 OMOL Conservative": "Rhodes, Benjamin, et al. *Orb-v3: atomistic simulation at scale.* arXiv preprint arXiv:2504.06231 (2025).",

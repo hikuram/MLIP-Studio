@@ -1093,7 +1093,8 @@ def calculate_bulk_modulus(calc_atoms, calc, num_points, volume_range, eos_type,
 
 @st.cache_data
 def load_reference_energies():
-    with open("reference_energies.yaml", "r") as f:
+    reference_path = Path(__file__).resolve().parent / "mlipstudio" / "reference_energies.yaml"
+    with reference_path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 ELEMENT_REF_ENERGIES = load_reference_energies()
@@ -2036,7 +2037,7 @@ else:
         )
     if model_type == "In-House":
         selected_model = st.sidebar.selectbox("Select In-House Model:", ['QM9-Gap'])
-        model_path = 'mlip-studio-qm9-gap.pt'
+        model_path = str(Path(__file__).resolve().parent / 'mlipstudio' / 'mlip-studio-qm9-gap.pt')
     if atoms is not None and selected_model is not None:
 
         if atoms.pbc.any() and model_type=="UFF":
@@ -2436,8 +2437,8 @@ if atoms is not None:
 
                         calc = get_fairchem_model(selected_model, model_path, device, selected_task_type)
                     elif model_type == "ORB":
-
-                        orbff = model_path(device=device, precision=selected_default_dtype)
+                        orb_factory = getattr(pretrained, model_path)
+                        orbff = orb_factory(device=device, precision=selected_default_dtype)
                         calc = ORBCalculator(orbff, device=device)
                     elif model_type == "MatterSim":
 

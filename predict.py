@@ -21,7 +21,7 @@ from model import MPNN
 from torch_geometric.data import DataLoader, Data
 
 
-def load_model(model_path: str, device: torch.device) -> MPNN:
+def load_model(model_path: str, device: torch.device, *, verbose: bool = True) -> MPNN:
     """Load a trained MPNN model from a checkpoint."""
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     args_dict = checkpoint['args']
@@ -41,8 +41,9 @@ def load_model(model_path: str, device: torch.device) -> MPNN:
 
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    print(f"Loaded model from {model_path} (epoch {checkpoint.get('epoch', '?')}, "
-          f"val MAE {checkpoint.get('val_mae', '?'):.4f} eV)")
+    if verbose:
+        print(f"Loaded model from {model_path} (epoch {checkpoint.get('epoch', '?')}, "
+              f"val MAE {checkpoint.get('val_mae', '?'):.4f} eV)")
     return model, args_dict
 
 
