@@ -378,9 +378,9 @@ python -m pip install . --no-deps
 
 Dependency resolution is intentionally disabled because several supported
 model families require custom installation ordering, source repositories, or
-`--no-deps`. The API installer packages `mlipstudio`, its current compatibility
-modules, and the bundled QM9 checkpoint; it does not install Streamlit or any
-model-family runtime.
+`--no-deps`. The API installer packages `mlipstudio`, its model-catalog
+compatibility module, and the bundled QM9 checkpoint; it does not install
+Streamlit or any model-family runtime.
 
 Verify the installation from a directory outside the repository:
 

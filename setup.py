@@ -24,7 +24,7 @@ setup(
     license_files=("LICENSE.md",),
     python_requires=">=3.10",
     packages=find_packages(include=("mlipstudio", "mlipstudio.*")),
-    py_modules=("model_config", "data", "model", "predict"),
+    py_modules=("model_config",),
     package_data={
         "mlipstudio": (
             "mlip-studio-qm9-gap.pt",

@@ -164,6 +164,28 @@ def test_homo_lumo_task_validates_domain_and_returns_gap():
         )
 
 
+def test_bundled_qm9_gap_does_not_require_repository_level_modules(monkeypatch):
+    for legacy_module in ("predict", "data", "model"):
+        monkeypatch.setitem(sys.modules, legacy_module, None)
+
+    calculator = mlipstudio.create_calculator("QM9-Gap", device="cpu")
+    result = mlipstudio.HOMOLUMOGapTask().calculate(
+        Atoms(
+            "CH4",
+            positions=[
+                [0.0, 0.0, 0.0],
+                [0.629118, 0.629118, 0.629118],
+                [-0.629118, -0.629118, 0.629118],
+                [0.629118, -0.629118, -0.629118],
+                [-0.629118, 0.629118, -0.629118],
+            ],
+        ),
+        calculator,
+    )
+
+    assert result.gap_eV == pytest.approx(13.629583, abs=1.0e-5)
+
+
 class SpinSensitiveCalculator(Calculator):
     implemented_properties = ["energy"]
 
