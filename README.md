@@ -364,17 +364,24 @@ Install the required model libraries using the family-specific instructions
 below, then install the Python API from the repository root. Do not run this
 command from inside the `mlipstudio/` directory.
 
-For an editable development installation:
+For a regular installation (recommended, including Colab and Kaggle):
+
+```bash
+python -m pip install . --no-deps
+```
+
+For an editable installation during local API development:
 
 ```bash
 python -m pip install -e . --no-deps
 ```
 
-For a regular local installation:
-
-```bash
-python -m pip install . --no-deps
-```
+Do not use editable mode in an already-running hosted-notebook kernel. Editable
+installs register the source directory through startup-time path configuration,
+so Colab or Kaggle may not see the package until the kernel restarts. A regular
+install copies the package into the active environment and can be imported from
+any working directory. If reinstalling after `mlipstudio` has already been
+imported, restart the notebook kernel before continuing.
 
 Dependency resolution is intentionally disabled because several supported
 model families require custom installation ordering, source repositories, or

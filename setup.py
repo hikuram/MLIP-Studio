@@ -2,7 +2,8 @@
 
 Dependencies are intentionally not declared here.  MLIP model stacks have
 family-specific installation constraints; install them using README.md, then
-install this API with ``python -m pip install -e . --no-deps``.
+install this API with ``python -m pip install . --no-deps``.  Editable mode is
+intended only for local development.
 """
 
 from pathlib import Path
