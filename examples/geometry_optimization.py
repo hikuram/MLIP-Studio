@@ -11,6 +11,8 @@ atoms = bulk("Cu", "fcc", a=3.62).repeat((2, 2, 2))
 atoms.positions[0] += [0.10, -0.06, 0.04]
 
 calculator = mlipstudio.create_calculator("MACE MPA Medium", device=device)
+# Also supported: "Lindh Hessian LBFGS", "MACE Hessian LBFGS",
+# and "MACE-Seed LBFGS".
 task = mlipstudio.OptimizationTask(optimizer="LBFGS", fmax=0.05, steps=30)
 result = task.calculate(atoms, calculator)
 

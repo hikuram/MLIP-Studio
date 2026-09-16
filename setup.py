@@ -24,7 +24,9 @@ setup(
     license="Academic Software License",
     license_files=("LICENSE.md",),
     python_requires=">=3.10",
-    packages=find_packages(include=("mlipstudio", "mlipstudio.*")),
+    packages=find_packages(
+        include=("mlipstudio", "mlipstudio.*", "optimizers", "optimizers.*")
+    ),
     py_modules=("model_config",),
     package_data={
         "mlipstudio": (

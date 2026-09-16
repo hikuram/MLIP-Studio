@@ -143,6 +143,42 @@ def test_band_gap_dos_task_returns_absolute_and_fermi_shifted_grid():
     )
 
 
+class CurrentPETMADDOSCalculator:
+    energy_interval = 0.05
+
+    def __init__(self):
+        self.requested_properties = None
+
+    def calculate(self, atoms, properties=("dos_raw", "bandgap", "fermi_level")):
+        self.requested_properties = tuple(properties)
+        return {
+            "dos_denoised": np.array([0.0, 1.0, 0.5, 0.0]),
+            "bandgap": np.array([1.25]),
+            "fermi_level": np.array([0.10]),
+        }
+
+
+def test_band_gap_dos_task_supports_current_upet_result_dictionary_api():
+    atoms = Atoms("Si2", positions=[[0, 0, 0], [1, 1, 1]], cell=[3, 3, 3], pbc=True)
+    calculator = CurrentPETMADDOSCalculator()
+
+    result = mlipstudio.BandGapDOSTask().calculate(atoms, calculator)
+
+    assert calculator.requested_properties == (
+        "dos_denoised",
+        "bandgap",
+        "fermi_level",
+    )
+    assert result.band_gap_eV == pytest.approx(1.25)
+    assert result.fermi_level_eV == pytest.approx(0.10)
+    np.testing.assert_allclose(result.energies_eV, [0.0, 0.05, 0.10, 0.15])
+    np.testing.assert_allclose(
+        result.energies_relative_to_fermi_eV,
+        [-0.10, -0.05, 0.0, 0.05],
+    )
+    np.testing.assert_allclose(result.density_of_states, [0.0, 1.0, 0.5, 0.0])
+
+
 class FakeQM9GapCalculator:
     def calculate_homo_lumo_gap(self, atoms):
         return 4.2

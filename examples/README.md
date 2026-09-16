@@ -26,6 +26,13 @@ Available examples:
 - `dipole_moment.py` — dipole moment and partial charges
 - `spin_determination.py` — molecular spin-state scan
 - `band_gap_dos.py` — material band gap and density of states
+- `analytical_hessian.py` — analytical Cartesian MACE Hessian
+- `vibrational_modes.py` — finite-difference vibrational mode analysis
+- `equation_of_state.py` — periodic equation-of-state fit
+- `model_consensus.py` — energy and force agreement across models
+- `batch_energy_force_stress.py` — energy, forces, and stress for many structures
+- `batch_homo_lumo.py` — HOMO-LUMO gaps for many molecules
+- `batch_atomization_energy.py` — atomization energies for many molecules
 
 The examples use small ASE-built structures so the API call is easy to see.
 Replace, for example,

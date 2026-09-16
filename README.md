@@ -119,9 +119,9 @@ opt.run(fmax=0.01, steps=400)
 
 The Lindh implementation is in `optimizers/lindh.py`; analytical MACE Hessian and seed implementations are in `optimizers/analytical_hessian.py`; shared line-search-free step logic is in `optimizers/fixed_step.py`; and public imports are defined in `optimizers/__init__.py`. The downloadable package exposes only the three released optimizer classes.
 
-## Programmatic API (Initial)
+## Programmatic API
 
-The repository now includes an initial UI-independent `mlipstudio` package. It
+The repository includes a UI-independent `mlipstudio` package. It
 can discover the 62 universal models without importing their heavyweight
 runtimes, construct calculators lazily, and run the task APIs described below
 on an `ase.Atoms` object.
@@ -130,8 +130,9 @@ Run the complete installation and API showcase in Google Colab:
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mlipstudio/MLIP-Studio/blob/main/examples/MLIP_Studio_API_Colab.ipynb)
 
-The notebook demonstrates model discovery, single-point energy/forces/stress,
-geometry optimization, cohesive and atomization energy, HOMO-LUMO gap,
+The notebook demonstrates model discovery, single-point and batch prediction,
+geometry optimization, analytical Hessians, vibrational modes, EOS fitting,
+model consensus, cohesive and atomization energy, HOMO-LUMO gap,
 dipole/partial charges, spin determination, and band gap/DOS.
 
 Simple standalone scripts for every public task are available in
@@ -158,6 +159,74 @@ Tasks copy their input by default and results contain raw numerical values in
 ASE units. UMA models require an explicit `task_name` parameter, and multimodal
 SevenNet models require an explicit `modal` parameter. The detailed extraction,
 packaging, MD, and NEB plan is in `mlipstudio/API_DESIGN.md`.
+
+### Hessians, Vibrations, EOS, and Consensus
+
+```python
+from ase.build import bulk
+
+# Analytical Cartesian Hessian from a calculator that supports get_hessian().
+hessian = mlipstudio.MACEHessianTask().calculate(atoms, calculator)
+print(hessian.hessian_eV_per_A2)
+
+# Finite-difference normal modes. Scratch files are removed automatically.
+vibrations = mlipstudio.VibrationalModeTask().calculate(atoms, calculator)
+print(vibrations.frequencies_cm_minus1)
+
+# A 3D-periodic energy-volume scan and bounded Birch-Murnaghan fit.
+periodic_atoms = bulk("Cu", "fcc", a=3.62)
+eos = mlipstudio.EquationOfStateTask().calculate(periodic_atoms, calculator)
+print(eos.bulk_modulus_GPa)
+
+# Factories let the consensus task load and release one model at a time.
+models = {
+    "model-a": mlipstudio.CalculatorFactory("MACE MPA Medium"),
+    "model-b": mlipstudio.CalculatorFactory("MACE MP 0b2 Small"),
+}
+consensus = mlipstudio.ModelConsensusTask().calculate(periodic_atoms, models)
+print(consensus.energy_range_eV_per_atom)
+print(consensus.max_force_disagreement_eV_per_A)
+```
+
+Model agreement is an uncertainty warning signal, not proof of DFT accuracy;
+models can share correlated errors and training-domain gaps.
+
+The optimization API accepts the specialist optimizer names directly:
+
+```python
+task = mlipstudio.OptimizationTask(
+    optimizer="Lindh Hessian LBFGS",  # or "MACE Hessian LBFGS" / "MACE-Seed LBFGS"
+    fmax=0.01,
+    steps=200,
+)
+result = task.calculate(atoms, calculator)
+```
+
+`Lindh Hessian LBFGS` is fixed-cell only. The two MACE Hessian methods can use
+the target calculator's Hessian or a separate provider passed as
+`hessian_calculator=`.
+
+### Batch Tasks
+
+Batch results preserve input order and keep per-structure failures in
+`failed_items` by default:
+
+```python
+structures = [periodic_atoms]
+molecules = [atoms]
+gap_calculator = mlipstudio.create_calculator("QM9-Gap")
+
+single_points = mlipstudio.BatchEnergyForceStressTask().calculate(
+    structures, calculator
+)
+gaps = mlipstudio.BatchHOMOLUMOGapTask().calculate(molecules, gap_calculator)
+atomization = mlipstudio.BatchAtomizationEnergyTask().calculate(
+    molecules, calculator
+)
+
+for item in single_points.successful_items:
+    print(item.label, item.result.energy, item.result.max_force)
+```
 
 ### Band Gap and Density of States
 

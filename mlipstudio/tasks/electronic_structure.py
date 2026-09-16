@@ -38,6 +38,79 @@ def _as_scalar(value: Any, label: str) -> float:
     return result
 
 
+def _pet_mad_energy_grid(calculator: Any, dos_size: int) -> np.ndarray:
+    """Get the DOS grid from old UPET or reconstruct the new UPET grid."""
+
+    for attribute in ("energy_grid", "_energy_grid"):
+        value = getattr(calculator, attribute, None)
+        if value is not None:
+            grid = _as_numpy(value, "DOS energies").reshape(-1)
+            if grid.size == dos_size:
+                return grid
+
+    interval = getattr(calculator, "energy_interval", None)
+    if interval is None:
+        try:
+            from upet.calculator import ENERGY_INTERVAL
+
+            interval = ENERGY_INTERVAL
+        except (ImportError, AttributeError):
+            interval = None
+    if interval is None or not np.isfinite(float(interval)) or float(interval) <= 0:
+        raise TaskCalculationError(
+            "The PET-MAD-DOS calculator did not provide a valid DOS energy grid."
+        )
+    return np.arange(dos_size, dtype=float) * float(interval)
+
+
+def _calculate_pet_mad_outputs(
+    calculator: Any,
+    atoms: Atoms,
+) -> tuple[Any, Any, Any, Any]:
+    """Support both the legacy UPET API and the UPET 0.2.3+ API."""
+
+    legacy_methods = ("calculate_dos", "calculate_bandgap", "calculate_efermi")
+    if all(callable(getattr(calculator, name, None)) for name in legacy_methods):
+        energies, dos = calculator.calculate_dos(atoms)
+        band_gap = calculator.calculate_bandgap(atoms, dos=dos)
+        fermi = calculator.calculate_efermi(atoms, dos=dos)
+        return energies, dos, band_gap, fermi
+
+    calculate = getattr(calculator, "calculate", None)
+    if not callable(calculate):
+        raise TaskValidationError(
+            "The calculator does not provide a supported PET-MAD-DOS interface."
+        )
+
+    requested = ("dos_denoised", "bandgap", "fermi_level")
+    outputs = calculate(atoms, properties=requested)
+    if outputs is None:
+        outputs = getattr(calculator, "results", None)
+    if not isinstance(outputs, dict):
+        raise TaskCalculationError(
+            "The PET-MAD-DOS calculator did not return a result dictionary."
+        )
+
+    dos = outputs.get("dos_denoised", outputs.get("dos_raw"))
+    missing = [
+        label
+        for label, value in (
+            ("dos_denoised or dos_raw", dos),
+            ("bandgap", outputs.get("bandgap")),
+            ("fermi_level", outputs.get("fermi_level")),
+        )
+        if value is None
+    ]
+    if missing:
+        raise TaskCalculationError(
+            "The PET-MAD-DOS result is missing: " + ", ".join(missing)
+        )
+
+    dos_size = _as_numpy(dos, "density of states").reshape(-1).size
+    energies = _pet_mad_energy_grid(calculator, dos_size)
+    return energies, dos, outputs["bandgap"], outputs["fermi_level"]
+
+
 @dataclass(frozen=True)
 class BandGapDOSResult:
     """Electronic DOS result with energies in eV."""
@@ -66,20 +139,12 @@ class BandGapDOSTask(Task):
         validate_atoms(atoms)
         if calculator is None:
             raise TaskValidationError("BandGapDOSTask requires a PET-MAD-DOS calculator.")
-        required_methods = ("calculate_dos", "calculate_bandgap", "calculate_efermi")
-        missing = [name for name in required_methods if not callable(getattr(calculator, name, None))]
-        if missing:
-            raise TaskValidationError(
-                "The calculator does not provide the PET-MAD-DOS method(s): "
-                + ", ".join(missing)
-            )
-
         working_atoms = atoms.copy() if self.copy_atoms else atoms
         started = time.perf_counter()
         try:
-            raw_energies, raw_dos = calculator.calculate_dos(working_atoms)
-            raw_band_gap = calculator.calculate_bandgap(working_atoms, dos=raw_dos)
-            raw_fermi = calculator.calculate_efermi(working_atoms, dos=raw_dos)
+            raw_energies, raw_dos, raw_band_gap, raw_fermi = (
+                _calculate_pet_mad_outputs(calculator, working_atoms)
+            )
             energies = _as_numpy(raw_energies, "DOS energies").reshape(-1)
             dos = _as_numpy(raw_dos, "density of states").reshape(-1)
             band_gap = _as_scalar(raw_band_gap, "band gap")

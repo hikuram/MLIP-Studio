@@ -37,9 +37,11 @@ property provider for models such as PET-MAD-DOS and QM9-Gap. Model libraries
 are imported lazily. `CalculatorFactory` stores a reusable recipe and is
 intended for workflows that need more than one independent calculator.
 
-The initial implementation also includes `BandGapDOSTask` with PET-MAD-DOS,
-`HOMOLUMOGapTask` with the bundled QM9 checkpoint, and
-`SpinDeterminationTask` for charge/multiplicity energy scans.
+The implementation also includes `BandGapDOSTask` with PET-MAD-DOS,
+`HOMOLUMOGapTask` with the bundled QM9 checkpoint,
+`SpinDeterminationTask` for charge/multiplicity energy scans, analytical MACE
+Hessians, finite-difference vibrations, EOS fitting, model consensus, and the
+three GUI batch workflows.
 
 ## Current repository findings
 
@@ -55,9 +57,9 @@ The initial implementation also includes `BandGapDOSTask` with PET-MAD-DOS,
    progress rendering, and conversion into display strings/dataframes/plots.
    The numerical parts must move into `mlipstudio.tasks`; the GUI should later
    call those tasks and render their results.
-4. The released `optimizers` package is already mostly reusable. Standard ASE
-   optimizers and three Hessian-guided optimizers can be adapted into a common
-   optimizer registry. `FASTMSO`, however, is still embedded in `Home.py`.
+4. The released `optimizers` package is reusable. Standard ASE optimizers and
+   the Lindh Hessian, MACE Hessian, and MACE-Seed LBFGS methods now share the
+   API optimizer registry. `FASTMSO`, however, is still embedded in `Home.py`.
 5. A minimal dependency-free `setup.py` now supports local API installation,
    but there is no `pyproject.toml`, dependency-extras matrix, or documentation
    build. The current requirements file installs all model families and several
@@ -123,15 +125,16 @@ integration test per model family.
   builders with `create_calculator()`/`CalculatorFactory`.
 - Move UFF and xTB calculators out of `Home.py`. Treat D3 as a composable
   correction, not as interchangeable with a complete potential.
-- Move `FASTMSO` into `optimizers` and register the three Hessian-guided
-  optimizers. Let optimization accept a separate Hessian calculator factory.
+- Move `FASTMSO` into `optimizers`. The three Hessian-guided optimizers are now
+  registered and `OptimizationTask` accepts a separate Hessian calculator;
+  accepting a calculator factory for that provider remains future work.
 - Introduce an explicit capability/compatibility registry. Model name
   substring checks must not decide whether charge, spin, stress, Hessian,
   dipole, uncertainty, or a task is supported.
 - Add GUI adapters that render API result objects. Delete the old numerical
   branches only after parity tests pass.
 
-### Phase 3: existing task parity
+### Phase 3: existing task parity (API extraction implemented)
 
 Recommended extraction order:
 
@@ -149,12 +152,15 @@ Recommended extraction order:
    provenance-bearing reference-energy provider into the GUI.
 7. Migrate the implemented DOS/band-gap, in-house QM9, and MACE-POLAR
    dipole/partial-charge tasks into the GUI.
-8. Model consensus and perturbation scans, refactored to consume the central
-   catalog and common single-point validation.
+8. Model consensus is now UI-independent and accepts calculators or factories.
+   Perturbation scans and migration of the GUI to the new API remain pending.
 
 Each task needs pure unit tests, input immutability tests, unit/shape tests,
 failure-path tests, and GUI parity fixtures based on small deterministic
 structures.
+
+The extracted task APIs have deterministic unit coverage. GUI parity fixtures
+and replacing the remaining inline GUI implementations are still required.
 
 ### Phase 4: molecular dynamics
 
@@ -228,6 +234,29 @@ images. Design it around `CalculatorFactory`, not one shared calculator:
   `UPET_MODELS_VERSIONS`; verify whether that is intentional before release.
 - The GUI sets `external_field` only in one energy branch, so MACE-POLAR behavior
   may differ between tasks. Model-specific defaults belong in one adapter.
+
+### Numerical workflow caveats
+
+- `VibrationalModeTask` uses finite-difference forces and therefore needs up to
+  six force evaluations per selected atom with `nfree=2`. It intentionally
+  preserves imaginary modes, but translational/rotational projection and a
+  direct analytical-Hessian normal-mode path are not implemented yet.
+- `EquationOfStateTask` is a static isotropic volume scan. It does not relax
+  internal coordinates or cell shape at each volume. EOS parameters are only
+  trustworthy when the sampled range brackets a well-resolved minimum; users
+  must inspect residuals, covariance, and whether the result is model/domain
+  appropriate.
+- Consensus disagreement can reveal model spread but cannot establish
+  accuracy: models may have correlated errors or overlapping training data.
+  The API currently evaluates a single structure; the GUI perturbation scan is
+  still separate.
+- Batch tasks are deliberately sequential to avoid multiplying GPU memory use.
+  They report per-item errors but do not yet stream inputs/results, checkpoint,
+  parallelize, or cache calculated isolated-atom references across different
+  batch items.
+- Lindh Hessian LBFGS does not support cell degrees of freedom. MACE Hessian and
+  MACE-Seed can precondition a cell filter, but the analytical Hessian covers
+  Cartesian atoms; the cell block is regularized diagonal.
 - A calculator instance may cache atoms/results and is not assumed thread-safe.
   Reuse it sequentially; use factories for concurrent workers or NEB images.
 
