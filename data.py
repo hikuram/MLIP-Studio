@@ -6,12 +6,12 @@ and atomic number-based node features.
 
 import numpy as np
 import torch
-from torch_geometric.data import Data, Dataset, DataLoader
+from torch_geometric.data import Data, Dataset
+from torch_geometric.loader import DataLoader  # ← PyG 2.0+ の修正
 from ase.io import read
 from ase.data import atomic_numbers
 from scipy.spatial.distance import pdist, squareform
 from typing import List, Optional, Tuple
-
 
 # Supported elements and their embedding indices
 SUPPORTED_ELEMENTS = [
