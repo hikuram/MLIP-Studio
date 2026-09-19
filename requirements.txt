@@ -37,3 +37,6 @@ ray[serve]
 hydra-core
 torchtnt
 numba
+
+mp-api
+torch-geometric
