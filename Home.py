@@ -10,18 +10,25 @@ import platform
 import psutil
 import random
 import traceback
-import time
 import gc
 from scipy.optimize import curve_fit
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import torch
+
 # FOR CPU only mode
 torch._dynamo.config.suppress_errors = True
-# Or disable compilation entirely
-# torch.backends.cudnn.enabled = False
+
 import plotly.express as px
 import numpy as np
+import pandas as pd
+import yaml
+import subprocess
+import sys
+
+# pkg_resources の代わりに標準ライブラリを使用
+import importlib.metadata
+
 from ase import Atoms
 from ase.io import read, write
 from ase.calculators.calculator import Calculator, all_changes
@@ -33,22 +40,12 @@ from ase.optimize.minimahopping import MinimaHopping
 from optimizers import LindhHessianLBFGS, MACEHessianLBFGS, MACESeedLBFGS
 from optimizers.analytical_hessian import AnalyticalHessianError
 from optimizers.lindh import LindhError
-from ase.units import kB
+from ase.units import kB, Hartree, Bohr
 from ase.constraints import FixAtoms
 from ase.filters import FrechetCellFilter
 from ase.visualize import view
-import py3Dmol
-from mace.calculators import mace_mp
-from fairchem.core import pretrained_mlip, FAIRChemCalculator
-from orb_models.forcefield import pretrained
-from orb_models.forcefield.calculator import ORBCalculator
-from sevenn.calculator import SevenNetCalculator
-import pandas as pd
-import yaml # Added for FairChem reference energies
-import subprocess
-import sys
-import pkg_resources
 from ase.vibrations import Vibrations
+import py3Dmol
 from mp_api.client import MPRester
 import pubchempy as pcp
 from io import StringIO
@@ -58,17 +55,62 @@ from pymatgen.core.structure import Molecule
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.ticker import MaxNLocator
-mattersim_available = True
-if mattersim_available:
-    from mattersim.forcefield import MatterSimCalculator
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdDetermineBonds
 from rdkit.Geometry import Point3D
-from ase.units import Hartree, Bohr
-from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
-from upet.calculator import UPETCalculator
-from upet.calculator import PETMADDOSCalculator
+
+
+# --- MLIPモデルの遅延・安全なインポート ---
+# インストールされていないモデルがあってもクラッシュしないように try-except で囲みます
+
+# 1. UPET (PET系)
+try:
+    from upet.calculator import UPETCalculator, PETMADDOSCalculator
+except ImportError:
+    pass
+
+# 2. ORB (orb-models)
+try:
+    from orb_models.forcefield import pretrained
+    from orb_models.forcefield.calculator import ORBCalculator
+except ImportError:
+    pass
+
+# 3. MACE
+try:
+    from mace.calculators import mace_mp
+except ImportError:
+    pass
+
+# 4. FairChem
+try:
+    from fairchem.core import pretrained_mlip, FAIRChemCalculator
+except ImportError:
+    pass
+
+# 5. SevenNet
+try:
+    from sevenn.calculator import SevenNetCalculator
+except ImportError:
+    pass
+
+# 6. MatterSim
+mattersim_available = False
+try:
+    from mattersim.forcefield import MatterSimCalculator
+    mattersim_available = True
+except ImportError:
+    pass
+
+# 7. Torch-DFTD3
+try:
+    from torch_dftd.torch_dftd3_calculator import TorchDFTD3Calculator
+except ImportError:
+    pass
+
+
+# --- 内部モジュールのインポート ---
 from model_config import (
     MACE_MODELS, MACE_CITATIONS, FAIRCHEM_MODELS, ORB_MODELS,
     MATTERSIM_MODELS, UPET_MODELS, UPET_MODELS_VERSIONS,
@@ -86,9 +128,8 @@ from model_consensus import (
 )
 from data import atoms_to_graph
 from model import MPNN
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader  # ← PyG 2.0+ の修正
 from predict import load_model
-
 
 from huggingface_hub import login
 
@@ -2603,22 +2644,42 @@ if atoms is not None:
                             )
 
                             with st.spinner("Computing DOS and band gap..."):
-
                                 calc_atoms = calc_atoms.copy()
-                                energies, dos = calc.calculate_dos(calc_atoms)
-                                bandgap = calc.calculate_bandgap(calc_atoms, dos=dos)
-                                fermi_level = calc.calculate_efermi(calc_atoms, dos=dos)
+                                
+                                # 公式仕様: calculate(atoms) は辞書を返す
+                                calc_out = calc.calculate(calc_atoms)
+                                res_dict = calc_out if isinstance(calc_out, dict) else getattr(calc, "results", {})
+                                
+                                # ノイズ除去済みDOSを優先して取得
+                                dos_raw = res_dict.get("dos_denoised", res_dict.get("dos_raw", res_dict.get("dos")))
+                                bandgap_raw = res_dict.get("bandgap", 0.0)
+                                fermi_level_raw = res_dict.get("fermi_level", res_dict.get("efermi", 0.0))
 
-                            # Convert to numpy
-                            energies = energies.squeeze().detach().cpu().numpy()
-                            dos = dos.squeeze().detach().cpu().numpy()
-                            fermi_level = fermi_level.item()
-                            bandgap = bandgap.item()
+                            # --- NumPy配列への安全な変換と次元の縮約 ---
+                            def to_numpy_1d(val):
+                                if val is None: return np.array([])
+                                arr = val.detach().cpu().numpy() if hasattr(val, "detach") else np.array(val)
+                                return arr.squeeze()
 
-                            # Shift energies relative to Fermi level
+                            dos = to_numpy_1d(dos_raw)
+                            fermi_level = float(getattr(fermi_level_raw, "item", lambda: float(fermi_level_raw))())
+                            bandgap = float(getattr(bandgap_raw, "item", lambda: float(bandgap))())
+
+                            # --- 公式仕様に基づくエネルギーグリッドの構築 ---
+                            # PET-MAD-DOSのエネルギーグリッド間隔は energy_interval (標準0.05 eV)
+                            energy_interval = getattr(calc, "energy_interval", 0.05)
+                            
+                            if len(dos) > 0:
+                                # インデックスに間隔を掛けて正しいエネルギー軸を生成
+                                energies = np.arange(len(dos)) * energy_interval
+                            else:
+                                energies = np.array([])
+
+                            # --- フェルミ準位を 0 eV にアラインメント ---
+                            # モデルの絶対エネルギーグリッドから Fermi Level を引くことで 0 eV に原点を合わせる
                             energies_shifted = energies - fermi_level
 
-                            # --- Clean metrics layout ---
+                            # --- クリーンなメトリクス表示 ---
                             col1, col2 = st.columns(2)
                             col1.metric("Band Gap (eV)", f"{bandgap:.4f}")
                             col2.metric("Fermi Level (eV)", f"{fermi_level:.4f}")
@@ -2636,31 +2697,32 @@ if atoms is not None:
                                     y=dos,
                                     mode="lines",
                                     name="DOS",
-                                    line=dict(width=2),
-                                    hovertemplate="Energy (E - Eₓ): %{x:.3f} eV<br>DOS: %{y:.4f}<extra></extra>",
+                                    line=dict(width=2, color="blue"),
+                                    hovertemplate="Energy - E_F: %{x:.3f} eV<br>DOS: %{y:.4f}<extra></extra>",
                                 )
                             )
 
-                            # Fermi level vertical line (at 0 eV)
+                            # フェルミ準位の垂直線 (0 eV)
                             fig.add_vline(
                                 x=0,
                                 line_width=2,
                                 line_dash="dash",
+                                line_color="black",
                                 annotation_text="Fermi Level",
                                 annotation_position="top right"
                             )
 
                             fig.update_layout(
                                 template="plotly_white",
-                                title="Density of States",
-                                xaxis_title="Energy (E - Eₓ) [eV]",
-                                yaxis_title="Density of States",
+                                title="Density of States (Aligned to Fermi Level)",
+                                xaxis_title="Energy - Fermi Level [eV]",
+                                yaxis_title="Density of States [states/eV]",
                                 hovermode="x unified",
                                 height=550,
                             )
 
                             st.plotly_chart(fig, use_container_width=True)
-
+                            
                         else:
                             st.error(
                                 "Band Gap and DOS prediction is only supported by the "
@@ -4793,9 +4855,9 @@ with st.expander('🔧 Tech Stack & System Information'):
     package_versions = {}
     for package in packages_to_check:
         try:
-            version = pkg_resources.get_distribution(package).version
+            version = importlib.metadata.version(package)
             package_versions[package] = version
-        except pkg_resources.DistributionNotFound:
+        except importlib.metadata.PackageNotFoundError:
             package_versions[package] = "Not installed"
     
     # Display in two columns
